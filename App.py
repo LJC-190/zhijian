@@ -220,60 +220,47 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------- 侧边栏（毛玻璃优化）----------
-# ---------- 侧边栏 API 配置 ----------
+# # ---------- 侧边栏 API 配置 ----------
 with st.sidebar:
     st.markdown("## ⚙️ 控制中心")
     st.markdown("---")
     st.markdown("#### 🔑 API 配置")
-    
-        # 密钥输入框 —— 通过指定 key 并清除 session 缓存，彻底防止密钥显示
-    # 清除可能残留的 session_state 密钥值（避免旧缓存干扰）
-    if "api_key_input" not in st.session_state:
-        st.session_state.api_key_input = ""
-    api_key = st.text_input(
-        "API密钥", 
-        type="password", 
-        help="输入你的大模型API密钥"
-    )
-    api_url = st.text_input(
-        "API地址", 
-        value="https://open.bigmodel.cn/api/paas/v4/chat/completions"
-    )
-    model = st.text_input(
-        "模型名称", 
-        value="glm-3-turbo"
-    )
-    
-    # 测试连接按钮
+
+    # 密钥输入框（空白，不显示真实密钥）
+    api_key_input = st.text_input("API密钥", type="password", help="可选，留空则使用系统内置密钥")
+    api_url = st.text_input("API地址", value="https://open.bigmodel.cn/api/paas/v4/chat/completions")
+    model = st.text_input("模型名称", value="glm-3-turbo")
+
+    # 实际使用的密钥：优先用户输入，否则从 Secrets 读取
+    actual_api_key = api_key_input if api_key_input else st.secrets.get("api_key", "")
+    actual_api_url = api_url if api_url else st.secrets.get("api_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions")
+    actual_model = model if model else st.secrets.get("model", "glm-3-turbo")
+
     if st.button("🔌 测试连接", use_container_width=True):
-        if not api_key:
-            st.error("请输入API密钥")
+        if not actual_api_key:
+            st.error("未配置API密钥，请在Secrets中设置或手动输入")
         else:
             with st.spinner("正在验证..."):
-                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                data = {"model": model, "messages": [{"role": "user", "content": "hi"}], "temperature": 0.1}
+                headers = {"Authorization": f"Bearer {actual_api_key}", "Content-Type": "application/json"}
+                data = {"model": actual_model, "messages": [{"role": "user", "content": "hi"}], "temperature": 0.1}
                 try:
-                    response = requests.post(api_url, headers=headers, json=data, timeout=10)
+                    response = requests.post(actual_api_url, headers=headers, json=data, timeout=10)
                     if response.status_code == 200:
                         st.success("✅ 连接成功")
                         st.session_state.api_configured = True
-                        st.session_state.api_key = api_key
-                        st.session_state.api_url = api_url
-                        st.session_state.model = model
-                        # 同时保存一份到独立的 input 缓存中，避免下次启动时丢失
-                        st.session_state.api_key_input = api_key
-                        st.session_state.api_url_input = api_url
-                        st.session_state.model_input = model
+                        st.session_state.api_key = actual_api_key
+                        st.session_state.api_url = actual_api_url
+                        st.session_state.model = actual_model
                     else:
                         st.error(f"连接失败，状态码：{response.status_code}")
                 except Exception as e:
                     st.error(f"连接异常：{e}")
-    
+
     st.markdown("---")
     st.markdown("#### 🔎 数据筛选")
     if 'history' not in st.session_state:
         st.session_state.history = []
-    
+
     if st.session_state.history:
         dates = []
         for rec in st.session_state.history:
@@ -289,7 +276,7 @@ with st.sidebar:
             date_range = None
     else:
         date_range = None
-    
+
     all_labels = set()
     for rec in st.session_state.history:
         if "分析结果" in rec and isinstance(rec["分析结果"], dict):
@@ -297,7 +284,7 @@ with st.sidebar:
             all_labels.add(label)
     label_options = sorted(list(all_labels)) if all_labels else ["高概率AI生成", "疑似AI生成", "大概率真人"]
     selected_labels = st.multiselect("判定标签", label_options, default=label_options)
-    
+
     st.markdown("---")
     if st.button("🗑️ 清空历史", use_container_width=True):
         st.session_state.history = []
