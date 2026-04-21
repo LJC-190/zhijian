@@ -226,14 +226,23 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("#### 🔑 API 配置")
     
-    # 优先从 secrets 读取密钥（线上环境），否则使用默认空值
-    default_key = ""
-    if "api_key" in st.secrets:
-        default_key = st.secrets["api_key"]
-    
-    api_key = st.text_input("API密钥", type="password", value=default_key, help="输入你的大模型API密钥")
-    api_url = st.text_input("API地址", value="https://open.bigmodel.cn/api/paas/v4/chat/completions")
-    model = st.text_input("模型名称", value="glm-3-turbo")
+        # 密钥输入框 —— 通过指定 key 并清除 session 缓存，彻底防止密钥显示
+    # 清除可能残留的 session_state 密钥值（避免旧缓存干扰）
+    if "api_key_input" not in st.session_state:
+        st.session_state.api_key_input = ""
+    api_key = st.text_input(
+        "API密钥", 
+        type="password", 
+        help="输入你的大模型API密钥"
+    )
+    api_url = st.text_input(
+        "API地址", 
+        value="https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    )
+    model = st.text_input(
+        "模型名称", 
+        value="glm-3-turbo"
+    )
     
     # 测试连接按钮
     if st.button("🔌 测试连接", use_container_width=True):
@@ -251,6 +260,10 @@ with st.sidebar:
                         st.session_state.api_key = api_key
                         st.session_state.api_url = api_url
                         st.session_state.model = model
+                        # 同时保存一份到独立的 input 缓存中，避免下次启动时丢失
+                        st.session_state.api_key_input = api_key
+                        st.session_state.api_url_input = api_url
+                        st.session_state.model_input = model
                     else:
                         st.error(f"连接失败，状态码：{response.status_code}")
                 except Exception as e:
