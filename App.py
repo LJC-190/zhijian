@@ -12,6 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # ---------- 页面配置 ----------
+
 st.set_page_config(
     page_title="智鉴 · AI内容检测",
     page_icon="🛡️",
@@ -232,7 +233,11 @@ with st.sidebar:
     model = st.text_input("模型名称", value="glm-3-turbo")
 
     # 实际使用的密钥：优先用户输入，否则从 Secrets 读取
-    actual_api_key = api_key_input if api_key_input else st.secrets.get("api_key", "")
+    try:
+      secret_key = st.secrets.get("api_key", "")
+    except FileNotFoundError:
+      secret_key = ""
+    actual_api_key = api_key_input if api_key_input else secret_key
     actual_api_url = api_url if api_url else st.secrets.get("api_url", "https://open.bigmodel.cn/api/paas/v4/chat/completions")
     actual_model = model if model else st.secrets.get("model", "glm-3-turbo")
 
@@ -298,10 +303,15 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 
 def call_llm(prompt, retries=2):
-    # 优先从 secrets 获取，否则从 session_state 获取
-    api_key = st.secrets.get("api_key") or st.session_state.get("api_key")
-    api_url = st.secrets.get("api_url") or st.session_state.get("api_url")
-    model = st.secrets.get("model") or st.session_state.get("model")
+    # 安全读取 secrets，本地无文件时降级使用 session_state
+    try:
+        api_key = st.secrets.get("api_key") or st.session_state.get("api_key")
+        api_url = st.secrets.get("api_url") or st.session_state.get("api_url")
+        model = st.secrets.get("model") or st.session_state.get("model")
+    except FileNotFoundError:
+        api_key = st.session_state.get("api_key")
+        api_url = st.session_state.get("api_url")
+        model = st.session_state.get("model")
     
     if not api_key or not api_url or not model:
         return "错误：API配置不完整"
@@ -471,13 +481,24 @@ with tab1:
                 trend = get_trend_data_for_comment(result)
                 brief = generate_structured_brief(result, trend)
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # 规范化 brief
+                if isinstance(brief, dict):
+                  brief_dict = brief
+                else:
+                  brief_dict = {
+                  "summary": str(brief),
+                  "impact": "",
+                  "actions": [],
+                  "risk_level": "未知"
+    }
+
                 st.session_state.history.append({
-                    "时间": timestamp,
-                    "文本摘要": input_text[:50] + "..." if len(input_text) > 50 else input_text,
-                    "完整文本": input_text,
-                    "分析结果": result,
-                    "简报": brief
-                })
+                  "时间": timestamp,
+                  "文本摘要": input_text[:50] + "..." if len(input_text) > 50 else input_text,
+                  "完整文本": input_text,
+                  "分析结果": result,
+                  "简报": brief_dict
+})
             
             st.markdown('<div class="card-title">📊 检测结果</div>', unsafe_allow_html=True)
             prob = result.get('ai_probability', 0.5)
@@ -536,8 +557,15 @@ with tab2:
     filtered = get_filtered_history(date_range, selected_labels)
     if filtered:
         total = len(filtered)
-        high_risk = sum(1 for r in filtered if r.get("简报", {}).get("risk_level") == "高")
-        avg_prob = sum(r["分析结果"].get("ai_probability", 0.5) for r in filtered) / total
+        high_risk = sum(
+            1 for r in filtered 
+            if isinstance(r.get("简报"), dict) and r["简报"].get("risk_level") == "高"
+)
+        avg_prob = sum(
+           r["分析结果"].get("ai_probability", 0.5) 
+           if isinstance(r.get("分析结果"), dict) else 0.5 
+           for r in filtered
+)        / total
         col_k1, col_k2, col_k3, col_k4 = st.columns(4)
         col_k1.metric("总检测数", total)
         col_k2.metric("高风险数", high_risk)
@@ -591,53 +619,89 @@ with tab2:
         st.info("暂无数据，请先进行智能检测")
 
 # ---------- 选项卡3：批量检测 ----------
+# ---------- 选项卡3：批量检测 ----------
 with tab3:
     st.markdown('<div class="card-title">📁 批量文本检测</div>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader("上传CSV文件", type=["csv"])
-    if uploaded_file:
+    if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         st.dataframe(df.head(), use_container_width=True)
         text_column = st.selectbox("选择文本所在列", df.columns.tolist())
         if st.button("开始批量检测", use_container_width=True):
-            progress_bar = st.progress(0)
-            results = []
-            total = len(df)
-            for i, row in df.iterrows():
-                text = str(row[text_column])
-                res = extract_ai_info(text)
-                brief_prompt = f"基于检测结果撰写风险提示：{json.dumps(res, ensure_ascii=False)}"
-                brief = call_llm(brief_prompt)
-                results.append({
-                    "原始文本": text[:100] + "..." if len(text) > 100 else text,
-                    "AI概率": res.get("ai_probability", 0.5),
-                    "工具指纹": res.get("tool_fingerprint", ""),
-                    "理由": res.get("reason", ""),
-                    "置信度": res.get("confidence_level", ""),
-                    "简报": brief
-                })
-                progress_bar.progress((i+1)/total)
-            result_df = pd.DataFrame(results)
-            st.dataframe(result_df, use_container_width=True)
-            csv = result_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 下载检测报告", csv, f"AI检测结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-            # 存入历史
-            for res in results:
-                st.session_state.history.append({
-                    "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "文本摘要": res["原始文本"],
-                    "完整文本": res["原始文本"],
-                    "分析结果": {
-                        "ai_probability": res["AI概率"],
-                        "tool_fingerprint": res["工具指纹"],
-                        "reason": res["理由"],
-                        "confidence_level": res["置信度"],
-                        "ai_label": "高概率AI生成" if res["AI概率"] >= 0.7 else ("疑似AI生成" if res["AI概率"] >= 0.4 else "大概率真人")
-                    },
-                    "简报": res["简报"]
-                })
+            if text_column not in df.columns:
+                st.error(f"列名 '{text_column}' 不存在，请检查")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                results = []
+                total = len(df)
+                failed = 0
+                for i, row in df.iterrows():
+                    text = str(row[text_column]) if pd.notna(row[text_column]) else ""
+                    if not text.strip():
+                        failed += 1
+                        results.append({
+                            "原始文本": "[空文本]",
+                            "AI概率": 0.5,
+                            "工具指纹": "跳过",
+                            "理由": "文本为空",
+                            "置信度": "低",
+                            "简报": "无有效文本"
+                        })
+                        progress_bar.progress((i+1)/total)
+                        continue
+                    status_text.text(f"正在检测第 {i+1}/{total} 条...")
+                    try:
+                        res = extract_ai_info(text)
+                        brief_prompt = f"基于检测结果撰写风险提示：{json.dumps(res, ensure_ascii=False)}"
+                        brief = call_llm(brief_prompt)
+                    except Exception as e:
+                        failed += 1
+                        res = {"ai_probability": 0.5, "tool_fingerprint": "错误", "reason": str(e), "confidence_level": "低"}
+                        brief = f"检测失败：{e}"
+                    # 规范化 brief 为字典
+                    if isinstance(brief, dict):
+                        brief_dict = brief
+                    else:
+                        brief_dict = {
+                            "summary": str(brief),
+                            "impact": "",
+                            "actions": [],
+                            "risk_level": "未知"
+                        }
+                    results.append({
+                        "原始文本": text[:100] + "..." if len(text) > 100 else text,
+                        "AI概率": res.get("ai_probability", 0.5),
+                        "工具指纹": res.get("tool_fingerprint", ""),
+                        "理由": res.get("reason", ""),
+                        "置信度": res.get("confidence_level", ""),
+                        "简报": brief_dict   # 存储字典，避免后续 get() 报错
+                    })
+                    progress_bar.progress((i+1)/total)
+                
+                status_text.text(f"✅ 检测完成！成功 {total - failed} 条，失败 {failed} 条")
+                result_df = pd.DataFrame(results)
+                st.dataframe(result_df, use_container_width=True)
+                csv = result_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 下载检测报告", csv, f"AI检测结果_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+                
+                # 存入历史记录（注意此时 results 中的简报已经是字典）
+                for res in results:
+                    st.session_state.history.append({
+                        "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "文本摘要": res["原始文本"],
+                        "完整文本": res["原始文本"],
+                        "分析结果": {
+                            "ai_probability": res["AI概率"],
+                            "tool_fingerprint": res["工具指纹"],
+                            "reason": res["理由"],
+                            "confidence_level": res["置信度"],
+                            "ai_label": "高概率AI生成" if res["AI概率"] >= 0.7 else ("疑似AI生成" if res["AI概率"] >= 0.4 else "大概率真人")
+                        },
+                        "简报": res["简报"]   # 已经是字典
+                    })
     else:
         st.info("📂 请上传包含文本数据的CSV文件")
-
 # 历史记录折叠
 with st.expander("📜 查看历史检测记录", expanded=False):
     if not st.session_state.history:
